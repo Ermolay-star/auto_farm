@@ -4,6 +4,11 @@
   "username": "twk_2",
   "version": "1.20.1",
   "auth": "offline",
+  "autoReconnect": true,
+  "reconnectDelay": 5000,
+  "joinStrategy": "npc",
+  "joinCommand": "/menu",
+  "joinItemSlot": 0,
   "npcSettings": {
     "searchRadius": 50,
     "npcName": "ВЫБОР СЕРВЕРА"

@@ -5,151 +5,193 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { pathfinder, Movements, goals } = pathfinderPlugin;
+const minecraftData = require('minecraft-data');
 
 const config = JSON.parse(readFileSync('./config.json', 'utf8'));
 
-const bot = mineflayer.createBot({
-  host: config.host,
-  port: config.port,
-  username: config.username,
-  version: config.version,
-  auth: config.auth,
-  hideErrors: false,
-  checkTimeoutInterval: 60000,
-  viewDistance: 'tiny'
-});
-
-bot.loadPlugin(pathfinder);
-
-let isReady = false;
+let bot;
 let afkInterval = null;
-
-bot.once('spawn', () => {
-  console.log('[✓] Бот заспавнился на сервере');
-  
-  isReady = true;
-  
-  handleMenuSelection();
-  
-  setTimeout(() => {
-    walkForwardAndOpenMenu();
-  }, 2000);
-});
-
-
 let menuOpened = false;
 let menuCheckTimeout = null;
+let reconnectTimeout = null;
 
-function walkForwardAndOpenMenu() {
-  console.log('[→] Иду вперед 3 блока...');
+function startBot() {
+  if (reconnectTimeout) clearTimeout(reconnectTimeout);
+  reconnectTimeout = null;
   
-  const startPos = bot.entity.position.clone();
-  bot.setControlState('forward', true);
+  console.log(`[i] Подключение к ${config.host}:${config.port} как ${config.username}...`);
   
-  const checkDistance = setInterval(() => {
-    const distance = bot.entity.position.distanceTo(startPos);
-    if (distance >= 3) {
-      bot.setControlState('forward', false);
-      clearInterval(checkDistance);
-      console.log('[✓] Прошел 3 блока');
-      
-      setTimeout(() => {
-        tryClickNPC();
-      }, 500);
+  bot = mineflayer.createBot({
+    host: config.host,
+    port: config.port,
+    username: config.username,
+    version: config.version,
+    auth: config.auth,
+    hideErrors: false,
+    checkTimeoutInterval: 60000,
+    viewDistance: 'tiny'
+  });
+
+  bot.loadPlugin(pathfinder);
+
+  bot.once('spawn', () => {
+    console.log('[✓] Бот заспавнился на сервере');
+    handleMenuSelection();
+
+    setTimeout(() => {
+      executeJoinStrategy();
+    }, 2000);
+  });
+
+  bot.on('kicked', (reason) => {
+    console.log('[✗] Кикнут:', reason);
+    handleReconnect();
+  });
+
+  bot.on('error', (err) => {
+    console.error('[✗] Ошибка:', err.message);
+    if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
+        handleReconnect();
     }
-  }, 50);
-  
-  setTimeout(() => {
-    bot.setControlState('forward', false);
-    clearInterval(checkDistance);
-  }, 5000);
+  });
+
+  bot.on('end', () => {
+    console.log('[✗] Соединение закрыто');
+    handleReconnect();
+  });
 }
 
-function tryClickNPC() {
-  console.log('[→] Пробую открыть меню...');
+function handleReconnect() {
+  cleanup();
+  if (config.autoReconnect && !reconnectTimeout) {
+    console.log(`[i] Повторное подключение через ${config.reconnectDelay / 1000} секунд...`);
+    reconnectTimeout = setTimeout(startBot, config.reconnectDelay);
+  }
+}
+
+function executeJoinStrategy() {
+  console.log(`[→] Стратегия входа: ${config.joinStrategy}`);
   
-  // Пробуем найти NPC
-  const entities = Object.values(bot.entities);
-  const npcInFront = entities.find(entity => {
-    if (entity.type === 'living' && entity.name === 'armor_stand') {
-      const distance = bot.entity.position.distanceTo(entity.position);
-      if (distance < 5) {
-        console.log(`[i] Найден armor_stand на расстоянии ${distance.toFixed(2)} блоков`);
-        return true;
+  switch (config.joinStrategy) {
+    case 'npc':
+      findAndInteractWithNPC();
+      break;
+    case 'command':
+      bot.chat(config.joinCommand);
+      console.log(`[✓] Отправлена команда: ${config.joinCommand}`);
+      break;
+    case 'item':
+      bot.setQuickBarSlot(config.joinItemSlot);
+      bot.activateItem();
+      console.log(`[✓] Использован предмет в слоте ${config.joinItemSlot}`);
+      break;
+    default:
+      console.log('[!] Стратегия не распознана, перехожу в AFK');
+      startAFK();
+  }
+}
+
+function findAndInteractWithNPC() {
+  const npcName = config.npcSettings.npcName.toLowerCase();
+  console.log(`[i] Поиск NPC: "${npcName}"...`);
+
+  const npc = bot.nearestEntity(entity => {
+    if (entity.type === 'player' || entity.type === 'living' || entity.type === 'armor_stand') {
+      const dist = bot.entity.position.distanceTo(entity.position);
+      if (dist > config.npcSettings.searchRadius) return false;
+
+      const name = (entity.username || entity.displayName || '').toLowerCase();
+      if (name.includes(npcName)) return true;
+
+      // Проверка метаданных (для некоторых серверов)
+      if (entity.metadata) {
+          for (const val of Object.values(entity.metadata)) {
+              if (typeof val === 'string' && val.toLowerCase().includes(npcName)) return true;
+              if (val && typeof val === 'object' && val.text && val.text.toLowerCase().includes(npcName)) return true;
+          }
       }
     }
     return false;
   });
-  
-  if (npcInFront) {
-    console.log('[→] Кликаю на NPC...');
-    bot.activateEntity(npcInFront);
+
+  if (npc) {
+    const dist = bot.entity.position.distanceTo(npc.position);
+    console.log(`[✓] NPC найден на расстоянии ${dist.toFixed(2)}`);
+
+    const mcData = minecraftData(bot.version);
+    const movements = new Movements(bot, mcData);
+    bot.pathfinder.setMovements(movements);
+
+    bot.pathfinder.setGoal(new goals.GoalFollow(npc, 2));
+
+    const reachCheck = setInterval(() => {
+      if (!bot.entity || !npc.position) {
+          clearInterval(reachCheck);
+          return;
+      }
+
+      if (bot.entity.position.distanceTo(npc.position) <= 3) {
+        clearInterval(reachCheck);
+        bot.pathfinder.setGoal(null);
+        console.log('[→] Кликаю на NPC...');
+        bot.activateEntity(npc);
+
+        menuCheckTimeout = setTimeout(() => {
+          if (!menuOpened) {
+            console.log('[!] Меню не открылось, пробую еще раз...');
+            bot.activateEntity(npc);
+          }
+        }, 3000);
+      }
+    }, 500);
+  } else {
+    console.log('[✗] NPC не найден. Использую запасной вариант (иду вперед)...');
+    walkForwardFallback();
   }
-  
-  // Также пробуем просто ПКМ в воздух
-  setTimeout(() => {
-    console.log('[→] Пробую ПКМ в воздух...');
-    bot.swingArm('right');
-  }, 200);
-  
-  menuCheckTimeout = setTimeout(() => {
-    if (!menuOpened) {
-      console.log('[!] Меню не открылось за 3 секунды, иду еще на 1 блок...');
-      walkOneBlockForward();
-    }
-  }, 3000);
 }
 
-function walkOneBlockForward() {
+function walkForwardFallback() {
   const startPos = bot.entity.position.clone();
   bot.setControlState('forward', true);
   
   const checkDistance = setInterval(() => {
+    if (!bot.entity) {
+        clearInterval(checkDistance);
+        return;
+    }
     const distance = bot.entity.position.distanceTo(startPos);
-    if (distance >= 1) {
+    if (distance >= 3) {
       bot.setControlState('forward', false);
       clearInterval(checkDistance);
-      console.log('[✓] Прошел еще 1 блок');
-      
-      setTimeout(() => {
-        tryClickNPC();
-      }, 500);
+      bot.swingArm('right');
+      console.log('[✓] Прошел 3 блока');
     }
   }, 50);
   
   setTimeout(() => {
-    bot.setControlState('forward', false);
-    clearInterval(checkDistance);
-  }, 2000);
+      bot.setControlState('forward', false);
+      clearInterval(checkDistance);
+  }, 5000);
 }
 
 function handleMenuSelection() {
-  console.log('[i] Обработчик меню зарегистрирован');
-  
   bot.on('windowOpen', (window) => {
-    console.log(`[✓] ОТКРЫТО ОКНО: "${window.title}" (тип: ${window.type})`);
+    const title = window.title ? window.title.toLowerCase() : '';
+    const configTitle = config.menuSettings.windowTitle.toLowerCase();
     
-    menuOpened = true;
-    if (menuCheckTimeout) {
-      clearTimeout(menuCheckTimeout);
-    }
+    console.log(`[✓] Открыто меню: "${window.title}"`);
     
-    // Проверяем любое окно с инвентарем
-    if (window.type === 'minecraft:generic_9x3' || 
-        window.type === 'minecraft:chest' ||
-        window.title.includes('Выбери') || 
-        window.title.includes('сервер') ||
-        window.title.includes(config.menuSettings.windowTitle)) {
-      console.log('[→] Это меню выбора! Кликаю на слот...');
+    if (title.includes(configTitle) || title.includes('выбор') || title.includes('сервер') || title.includes('select')) {
+      menuOpened = true;
+      if (menuCheckTimeout) clearTimeout(menuCheckTimeout);
       
+      console.log(`[→] Кликаю на слот ${config.menuSettings.slotToClick}...`);
       setTimeout(() => {
         try {
           bot.clickWindow(config.menuSettings.slotToClick, 0, 0);
-          console.log(`[✓] Кликнул на слот ${config.menuSettings.slotToClick}`);
-          
+          console.log('[✓] Клик выполнен');
           setTimeout(() => {
-            bot.closeWindow(window);
-            console.log('[✓] Закрыл меню');
+            if (bot.currentWindow) bot.closeWindow(window);
             startAFK();
           }, 1000);
         } catch (err) {
@@ -161,39 +203,41 @@ function handleMenuSelection() {
 }
 
 function startAFK() {
+  if (afkInterval) return;
   console.log('[AFK] Режим AFK активирован');
   
-  if (config.afkSettings.antiKick) {
-    afkInterval = setInterval(() => {
-      if (config.afkSettings.lookAround) {
-        bot.look(bot.entity.yaw + (Math.random() - 0.5) * 0.1, 
-                 bot.entity.pitch + (Math.random() - 0.5) * 0.1);
+  afkInterval = setInterval(() => {
+    if (config.afkSettings.antiKick) {
+      if (config.afkSettings.lookAround && bot.entity) {
+        bot.look(bot.entity.yaw + (Math.random() - 0.5) * 0.5,
+                 bot.entity.pitch + (Math.random() - 0.5) * 0.2);
       }
-    }, config.afkSettings.moveInterval);
-  }
+    }
+  }, config.afkSettings.moveInterval);
 }
 
-bot.on('kicked', (reason) => {
-  console.log('[✗] Кикнут:', reason);
-  cleanup();
-});
-
-bot.on('error', (err) => {
-  console.error('[✗] Ошибка:', err.message);
-});
-
-bot.on('end', () => {
-  console.log('[✗] Соединение закрыто');
-  cleanup();
-});
-
 function cleanup() {
-  if (afkInterval) clearInterval(afkInterval);
+  if (afkInterval) {
+    clearInterval(afkInterval);
+    afkInterval = null;
+  }
+  menuOpened = false;
+  if (menuCheckTimeout) {
+      clearTimeout(menuCheckTimeout);
+      menuCheckTimeout = null;
+  }
 }
 
 process.on('SIGINT', () => {
   console.log('\n[!] Остановка бота...');
   cleanup();
-  bot.quit();
+  if (bot) bot.quit();
   process.exit(0);
 });
+
+process.on('uncaughtException', (err) => {
+    console.error('[!] Критическая ошибка:', err);
+    handleReconnect();
+});
+
+startBot();
