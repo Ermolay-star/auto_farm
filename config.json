@@ -1,0 +1,20 @@
+{
+  "host": "ttohoc.bomjpvp.top",
+  "port": 25565,
+  "username": "twk_2",
+  "version": "1.20.1",
+  "auth": "offline",
+  "npcSettings": {
+    "searchRadius": 50,
+    "npcName": "ВЫБОР СЕРВЕРА"
+  },
+  "menuSettings": {
+    "windowTitle": "Выбери сервер!",
+    "slotToClick": 13
+  },
+  "afkSettings": {
+    "moveInterval": 30000,
+    "lookAround": true,
+    "antiKick": true
+  }
+}

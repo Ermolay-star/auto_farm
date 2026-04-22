@@ -1,0 +1,15 @@
+{
+  "name": "minecraft-afk-bot",
+  "version": "1.0.0",
+  "description": "Оптимизированный AFK бот для Minecraft",
+  "main": "bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "mineflayer": "^4.20.1",
+    "mineflayer-pathfinder": "^2.4.4",
+    "minecraft-data": "^3.69.0"
+  }
+}
