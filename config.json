@@ -9,6 +9,8 @@
   "joinStrategy": "npc",
   "joinCommand": "/menu",
   "joinItemSlot": 0,
+  "password": "yourpassword123",
+  "discordWebhook": "",
   "npcSettings": {
     "searchRadius": 50,
     "npcName": "ВЫБОР СЕРВЕРА"
@@ -20,6 +22,8 @@
   "afkSettings": {
     "moveInterval": 30000,
     "lookAround": true,
-    "antiKick": true
+    "antiKick": true,
+    "autoEat": true,
+    "randomActions": true
   }
 }
