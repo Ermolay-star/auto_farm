@@ -15,6 +15,10 @@ let afkInterval = null;
 let menuOpened = false;
 let menuCheckTimeout = null;
 let reconnectTimeout = null;
+let reachCheckInterval = null;
+let fallbackInterval = null;
+let fallbackTimeout = null;
+let mcData = null;
 
 const log = {
     info: (msg) => console.log(`\x1b[36m[INFO]\x1b[0m ${msg}`),
@@ -59,6 +63,7 @@ function startBot() {
 
     bot.once('spawn', () => {
         log.success('Бот заспавнился на сервере');
+        mcData = minecraftData(bot.version);
         sendToDiscord(`✅ Бот **${config.username}** заспавнился на сервере **${config.host}**`);
         handleMenuSelection();
 
@@ -115,6 +120,11 @@ function startBot() {
 
 function handleReconnect() {
     if (reconnectTimeout) return;
+    if (bot) {
+        bot.removeAllListeners();
+        bot.quit();
+        bot = null;
+    }
     cleanup();
     if (config.autoReconnect) {
         log.info(`Повторное подключение через ${config.reconnectDelay / 1000} секунд...`);
@@ -123,8 +133,7 @@ function handleReconnect() {
 }
 
 async function autoEat() {
-    if (bot.food < 15) {
-        const mcData = minecraftData(bot.version);
+    if (bot.food < 15 && mcData) {
         const food = bot.inventory.items().find(item => mcData.foodsArray.some(f => f.name === item.name));
         if (food) {
             try {
@@ -132,7 +141,7 @@ async function autoEat() {
                 await bot.consume();
                 log.info(`Съел ${food.name}`);
             } catch (err) {
-                log.error(`Ошибка при поедании: ${err.message}`);
+                log.error(`Ошибка при поедании (${food.name}): ${err.message}`);
             }
         }
     }
@@ -206,19 +215,21 @@ function findAndInteractWithNPC() {
         const dist = bot.entity.position.distanceTo(npc.position);
         log.success(`NPC найден на расстоянии ${dist.toFixed(2)}`);
 
-        const mcData = minecraftData(bot.version);
         const movements = new Movements(bot, mcData);
         bot.pathfinder.setMovements(movements);
         bot.pathfinder.setGoal(new goals.GoalFollow(npc, 2));
 
-        const reachCheck = setInterval(() => {
+        if (reachCheckInterval) clearInterval(reachCheckInterval);
+        reachCheckInterval = setInterval(() => {
             if (!bot.entity || !npc.position) {
-                clearInterval(reachCheck);
+                clearInterval(reachCheckInterval);
+                reachCheckInterval = null;
                 return;
             }
 
             if (bot.entity.position.distanceTo(npc.position) <= 3) {
-                clearInterval(reachCheck);
+                clearInterval(reachCheckInterval);
+                reachCheckInterval = null;
                 bot.pathfinder.setGoal(null);
                 log.info('Кликаю на NPC...');
                 bot.activateEntity(npc);
@@ -241,24 +252,31 @@ function walkForwardFallback() {
     const startPos = bot.entity.position.clone();
     bot.setControlState('forward', true);
 
-    const checkDistance = setInterval(() => {
+    if (fallbackInterval) clearInterval(fallbackInterval);
+    fallbackInterval = setInterval(() => {
         if (!bot.entity) {
-            clearInterval(checkDistance);
+            clearInterval(fallbackInterval);
+            fallbackInterval = null;
             return;
         }
         const distance = bot.entity.position.distanceTo(startPos);
         if (distance >= 3) {
             bot.setControlState('forward', false);
-            clearInterval(checkDistance);
+            clearInterval(fallbackInterval);
+            fallbackInterval = null;
             bot.swingArm('right');
             bot.activateItem();
             log.success('Прошел 3 блока и кликнул');
         }
     }, 50);
 
-    setTimeout(() => {
+    if (fallbackTimeout) clearTimeout(fallbackTimeout);
+    fallbackTimeout = setTimeout(() => {
         bot.setControlState('forward', false);
-        clearInterval(checkDistance);
+        if (fallbackInterval) {
+            clearInterval(fallbackInterval);
+            fallbackInterval = null;
+        }
     }, 5000);
 }
 
@@ -303,11 +321,15 @@ function startAFK() {
                 }
                 if (config.afkSettings.randomActions) {
                     const rnd = Math.random();
-                    if (rnd < 0.1) bot.setControlState('jump', true);
-                    else bot.setControlState('jump', false);
+                    if (rnd < 0.1) {
+                        bot.setControlState('jump', true);
+                        setTimeout(() => { if (bot.entity) bot.setControlState('jump', false); }, 500);
+                    }
 
-                    if (rnd > 0.9) bot.setControlState('sneak', true);
-                    else bot.setControlState('sneak', false);
+                    if (rnd > 0.9) {
+                        bot.setControlState('sneak', true);
+                        setTimeout(() => { if (bot.entity) bot.setControlState('sneak', false); }, 1000);
+                    }
 
                     if (rnd > 0.4 && rnd < 0.5) bot.swingArm('right');
                 }
@@ -321,11 +343,23 @@ function cleanup() {
         clearInterval(afkInterval);
         afkInterval = null;
     }
-    menuOpened = false;
+    if (reachCheckInterval) {
+        clearInterval(reachCheckInterval);
+        reachCheckInterval = null;
+    }
+    if (fallbackInterval) {
+        clearInterval(fallbackInterval);
+        fallbackInterval = null;
+    }
+    if (fallbackTimeout) {
+        clearTimeout(fallbackTimeout);
+        fallbackTimeout = null;
+    }
     if (menuCheckTimeout) {
         clearTimeout(menuCheckTimeout);
         menuCheckTimeout = null;
     }
+    menuOpened = false;
 }
 
 process.on('SIGINT', () => {
