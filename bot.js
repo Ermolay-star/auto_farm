@@ -114,8 +114,9 @@ function startBot() {
 }
 
 function handleReconnect() {
+    if (reconnectTimeout) return;
     cleanup();
-    if (config.autoReconnect && !reconnectTimeout) {
+    if (config.autoReconnect) {
         log.info(`Повторное подключение через ${config.reconnectDelay / 1000} секунд...`);
         reconnectTimeout = setTimeout(startBot, config.reconnectDelay);
     }
@@ -123,7 +124,8 @@ function handleReconnect() {
 
 async function autoEat() {
     if (bot.food < 15) {
-        const food = bot.inventory.items().find(item => item.name.includes('apple') || item.name.includes('bread') || item.name.includes('steak') || item.name.includes('cooked'));
+        const mcData = minecraftData(bot.version);
+        const food = bot.inventory.items().find(item => mcData.foodsArray.some(f => f.name === item.name));
         if (food) {
             try {
                 await bot.equip(food, 'hand');
@@ -172,10 +174,13 @@ function findAndInteractWithNPC() {
 
             if (entity.metadata) {
                 for (const meta of Object.values(entity.metadata)) {
-                    if (!meta) continue;
-                    const val = meta.value || meta;
+                    if (meta === null || meta === undefined) continue;
+                    const val = (typeof meta === 'object' && 'value' in meta) ? meta.value : meta;
                     if (typeof val === 'string' && val.toLowerCase().includes(npcName)) return true;
-                    if (val && typeof val === 'object' && JSON.stringify(val).toLowerCase().includes(npcName)) return true;
+                    if (val && typeof val === 'object') {
+                        const str = JSON.stringify(val).toLowerCase();
+                        if (str.includes(npcName)) return true;
+                    }
                 }
             }
         }
@@ -188,7 +193,8 @@ function findAndInteractWithNPC() {
                 const dist = bot.entity.position.distanceTo(entity.position);
                 if (dist > 5) return false;
                 const yaw = Math.atan2(entity.position.x - bot.entity.position.x, entity.position.z - bot.entity.position.z);
-                const yawDiff = Math.abs(bot.entity.yaw - yaw);
+                let yawDiff = Math.abs(bot.entity.yaw - yaw) % (Math.PI * 2);
+                if (yawDiff > Math.PI) yawDiff = Math.PI * 2 - yawDiff;
                 return yawDiff < 0.5;
             }
             return false;
